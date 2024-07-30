@@ -40,6 +40,64 @@ from prior import create_prior
 
 torch.backends.cudnn.enabled = False
 
+import pytorch3d
+from pytorch3d.structures import Meshes
+from pytorch3d.renderer import (
+    RasterizationSettings,
+    MeshRenderer,
+    MeshRasterizer,
+    SoftSilhouetteShader,
+    PerspectiveCameras,
+    look_at_view_transform
+)
+
+from torchvision import models, transforms
+import numpy as np
+from PIL import Image
+
+model = models.segmentation.deeplabv3_resnet101(pretrained=True).eval()
+
+def predict_silhouette(img):
+    if isinstance(img, np.ndarray):
+        if img.dtype == np.float32:
+            img = (img * 255).astype(np.uint8)
+        img = Image.fromarray(img)
+
+    preprocess = transforms.Compose([
+        transforms.Resize((1920, 1080)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    input_tensor = preprocess(img).unsqueeze(0)
+    with torch.no_grad():
+        output = model(input_tensor)['out'][0]
+    output_predictions = output.argmax(0)
+    silhouette = (output_predictions == 15).float()
+    return silhouette
+
+def create_renderer(device):
+    # Adjust the camera settings
+    distance = 2.0  # Reduce distance to make the object appear larger
+    elevation = -180  # Set to 0 to view the object from the side
+    azimuth = 0  # Set to 0 to face the object directly
+
+    R, T = look_at_view_transform(distance, elevation, azimuth)
+    cameras = PerspectiveCameras(device=device, R=R, T=T)
+    
+    # Define rasterization settings
+    raster_settings = RasterizationSettings(
+        image_size=(1920, 1080),
+        blur_radius=0.0,
+        faces_per_pixel=1,
+    )
+    
+    # Create the renderer
+    renderer = MeshRenderer(
+        rasterizer=MeshRasterizer(cameras=cameras, raster_settings=raster_settings),
+        shader=SoftSilhouetteShader()
+    )
+    return renderer
 
 def main(**args):
     output_folder = args.pop('output_folder')
@@ -192,6 +250,8 @@ def main(**args):
     else:
         device = torch.device('cpu')
 
+    renderer = create_renderer(device)
+
     # A weight for every joint of the model
     joint_weights = dataset_obj.get_joint_weights().to(device=device,
                                                        dtype=dtype)
@@ -204,6 +264,7 @@ def main(**args):
         fn = data['fn']
         keypoints = data['keypoints']
         print('Processing: {}'.format(data['img_path']))
+        predicted_silhouette = predict_silhouette(img)  # Predict the silhouette
 
         curr_result_folder = osp.join(result_folder, fn)
         if not osp.exists(curr_result_folder):
@@ -259,6 +320,8 @@ def main(**args):
                              right_hand_prior=right_hand_prior,
                              jaw_prior=jaw_prior,
                              angle_prior=angle_prior,
+                             renderer=renderer,   # Pass renderer to fit_single_frame
+                             predicted_silhouette=predicted_silhouette,  # Pass predicted silhouette
                              **args)
 
     elapsed = time.time() - start

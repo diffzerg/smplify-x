@@ -32,6 +32,13 @@ import torch.nn as nn
 from mesh_viewer import MeshViewer
 import utils
 
+from pytorch3d.structures import Meshes
+import matplotlib.pyplot as plt
+
+def dice_loss(pred, target, smooth=1.0):
+    intersection = (pred * target).sum()
+    dice = (2. * intersection + smooth) / (pred.sum() + target.sum() + smooth)
+    return 1 - dice
 
 @torch.no_grad()
 def guess_init(model,
@@ -300,9 +307,18 @@ class SMPLifyLoss(nn.Module):
                  expr_prior_weight=0.0, jaw_prior_weight=0.0,
                  coll_loss_weight=0.0,
                  reduction='sum',
+                 silhouette_weight=1.0,
+                 renderer=None, 
+                 predicted_silhouette=None,
+                 body_model=None,
                  **kwargs):
 
         super(SMPLifyLoss, self).__init__()
+        
+        self.body_model = body_model
+        self.silhouette_weight = silhouette_weight
+        self.renderer = renderer
+        self.predicted_silhouette = predicted_silhouette
 
         self.use_joints_conf = use_joints_conf
         self.angle_prior = angle_prior
@@ -361,6 +377,47 @@ class SMPLifyLoss(nn.Module):
                                                  dtype=weight_tensor.dtype,
                                                  device=weight_tensor.device)
                 setattr(self, key, weight_tensor)
+    
+
+    def compute_silhouette_loss(self, body_model_output, predicted_silhouette, renderer):
+        verts = body_model_output.vertices
+        faces = self.body_model.faces
+
+        verts[:, :, 1] = -verts[:, :, 1]  # Flip the Y-axis
+
+        # Adjust the scaling and translation
+        scaling_factor = 1.7
+        translation_vector = torch.tensor([0, -0.6, 0], device=verts.device)
+
+        verts = verts * scaling_factor + translation_vector
+        # Convert faces to tensor if it is a numpy array
+        if isinstance(faces, np.ndarray):
+            faces = faces.astype(np.int64)  # Convert to int64
+            faces = torch.tensor(faces, dtype=torch.long, device=verts.device)
+
+        # Add batch dimension to faces if it's missing
+        if faces.dim() == 2:
+            faces = faces.unsqueeze(0)
+
+        # Verify mesh construction
+        mesh = Meshes(verts, faces)
+
+        # Check renderer's intermediate output
+        silhouette = renderer(mesh)
+        silhouette_image = silhouette.squeeze()[..., 3]
+        binary_silhouette = (silhouette_image > 0.5).float()
+
+        # # Visualize predicted and binary silhouettes
+        # plt.figure(figsize=(10, 5))
+        # plt.subplot(1, 2, 1)
+        # plt.title("Predicted Silhouette")
+        # plt.imshow(predicted_silhouette.cpu().numpy(), cmap='gray')
+        # plt.subplot(1, 2, 2)
+        # plt.title("Binary Silhouette")
+        # plt.imshow(binary_silhouette.cpu().numpy(), cmap='gray')
+        # plt.show()
+
+        return dice_loss(binary_silhouette, predicted_silhouette)
 
     def forward(self, body_model_output, camera, gt_joints, joints_conf,
                 body_model_faces, joint_weights,
@@ -446,6 +503,13 @@ class SMPLifyLoss(nn.Module):
                       angle_prior_loss + pen_loss +
                       jaw_prior_loss + expression_loss +
                       left_hand_prior_loss + right_hand_prior_loss)
+        
+        # Compute silhouette loss
+        if self.renderer is not None and self.predicted_silhouette is not None:
+            silhouette_loss = self.compute_silhouette_loss(body_model_output, self.predicted_silhouette, self.renderer)
+            print(f"Silhouette loss: {silhouette_loss.item()}")  # Debugging silhouette loss value
+            total_loss += silhouette_loss * self.silhouette_weight
+
         return total_loss
 
 

@@ -97,6 +97,8 @@ def fit_single_frame(img,
                      ign_part_pairs=None,
                      left_shoulder_idx=2,
                      right_shoulder_idx=5,
+                     renderer=None,
+                     predicted_silhouette=None, 
                      **kwargs):
     assert batch_size == 1, 'PyTorch L-BFGS only supports batch_size == 1'
 
@@ -299,6 +301,9 @@ def fit_single_frame(img,
                                search_tree=search_tree,
                                tri_filtering_module=filter_faces,
                                dtype=dtype,
+                               body_model=body_model, # Updated Part for MoRF
+                               renderer=renderer, 
+                               predicted_silhouette=predicted_silhouette, 
                                **kwargs)
     loss = loss.to(device=device)
 

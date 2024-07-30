@@ -107,3 +107,13 @@ venv.bak/
 # mypy
 .mypy_cache/
 
+*.pkl
+*.obj
+*.json
+*.png
+smplx/
+view_meshes.mlx
+vposer_v1_0/snapshots/TR00_E096.pt
+vposer_v1_0/TR00_004_00_WO_accad.ini
+vposer_v1_0/version.txt
+vposer_v1_0/vposer_smpl.py
